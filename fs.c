@@ -28,6 +28,9 @@
 const int inodeStartBlk = 4;
 const int dataStartBlk = 6;
 
+char *block;
+char *buffer;
+
 FILE *fsp = NULL;
 struct memSuperblock spBlk;
 struct memInode pwdNode;
@@ -105,6 +108,8 @@ static int putBlock(unsigned int blockNum, void *buffer);	// To write a block of
 
 static unsigned int getFreeInode();	// Function to get a free Inode 
 static unsigned int getFreeData();	// Function to get a free Data block
+static int releaseData(unsigned int *blockList, int len);
+static int releaseInode(struct memInode *currNode);	
 
 // Inode functions
 
@@ -113,6 +118,7 @@ static int getPathNode(const char *path, struct memInode *currNode);
 static int initMemInode(struct memInode *currNode, struct diskInode dNode, unsigned int inodeNum);
 static int swapNode(unsigned int inodeNum, struct memInode *currNode);	// To swap the current inode in memory for another inode in the disk
 static int diskSync(struct memInode *currNode);				// Function to sync the in-memory inode to disk
+static int unlinkInode(unsigned int inodeNum);
 
 // Directory functions
 
@@ -120,7 +126,8 @@ static int getNames(const char *path, unsigned int *countNames, char names[][MAX
 static int addName(char *name, unsigned int inodeNum, struct memInode *currNode);
 static unsigned int searchDir(char *name, struct memInode currNode);	// Function to search a directory and return the inode number
 static int getDirRecs(struct memInode currNode, struct dirRecord *list);
-
+static int delName(char *name, struct memInode *currNode);
+static int searchPath(const char *path);
 
 static struct fuse_operations operations = {
 	.mkdir = mkdir_f,
@@ -194,8 +201,32 @@ static unsigned int getFreeData(){
 	return blockNum;
 }
 
-static int releaseInode(struct memInode currNode){
-	
+static int releaseData(unsigned int *blockList, int len){
+	struct dataBit bitMap;
+	unsigned int blockNum;
+	getBlock(spBlk.dSblk.dataBMap, &bitMap);
+	for(unsigned int i=0; i<len; i++){
+		bitMap.flag[blockList[i]-1] = 0;
+	}
+	spBlk.dSblk.numFreeData += len;
+	putBlock(spBlk.dSblk.dataBMap, &bitMap);
+	return 1;
+}
+
+static int releaseInode(struct memInode *currNode){
+	int numBlocks = currNode->dNode.numBlocks;
+	struct inodeBit bitMap;
+	unsigned int *blockList = malloc(sizeof(int)*numBlocks);
+	for(int i=0;i<numBlocks; i++){
+		blockList[i] = currNode->dNode.blockNums[i];
+	}
+	releaseData(blockList, numBlocks);
+	free(blockList);
+	getBlock(spBlk.dSblk.inodeBMap, &bitMap);
+	bitMap.flag[currNode->inodeNum - 1] = 0;
+	putBlock(spBlk.dSblk.inodeBMap, &bitMap);
+	return 1;
+}
 
 // Inode functions
 
@@ -277,11 +308,44 @@ static int getPathNode(const char *path, struct memInode *currNode){
 	return 1;
 }
 
-
+static int unlinkInode(unsigned int inodeNum){
+	struct memInode tempNode;
+	getDiskNode(inodeNum, &tempNode);
+	tempNode.dNode.n_link--;
+	tempNode.flagInode = 1;
+	diskSync(&tempNode);
+	if(tempNode.dNode.n_link == 0){
+		releaseInode(&tempNode);
+	}
+	return 1;
+}
 
 // Directory functions
 
-static int remove
+static int delName(char *name, struct memInode *currNode){
+	struct dirRecord recs[DIR_ENTRIES_BLOCK];
+	int j=0;
+	int flag = 0;
+	unsigned int inodeNum = 0;
+	unsigned int blockNum = 0;
+	for(int i=0;i<NUM_DIRECT && i< currNode->dNode.numBlocks; i++){
+		blockNum = currNode->dNode.blockNums[i];
+		getBlock(blockNum, recs);		// Reading a block of records
+		for(; j < currNode->dNode.numRecords; j++){
+			if(strcmp(recs[j % DIR_ENTRIES_BLOCK].name, name)==0){
+				inodeNum = recs[j % DIR_ENTRIES_BLOCK].inodeNum;
+				recs[j % DIR_ENTRIES_BLOCK].inodeNum = 0;	
+				currNode->dNode.numRecords--;
+				putBlock(blockNum, recs);
+				unlinkInode(inodeNum);	// To release the inode and all the blocks associated with it
+				flag=1;
+				return 1;
+			}
+		}
+	}
+	return 0;
+
+}
 
 static int getDirRecs(struct memInode currNode, struct dirRecord *list){
 	struct dirRecord buf[DIR_ENTRIES_BLOCK];
@@ -453,13 +517,13 @@ static int getattr_f(const char *path, struct stat *st){
 		return -ENOENT;
 	}
 	st->st_nlink = tempNode.dNode.n_link;
-	st->st_uid = get_uid();
-	st->st_gid = get_gid();
-	st0>st_mode = tempNode.dNode.mode;
+	//st->st_uid = get_uid();
+	//st->st_gid = get_gid();
+	st->st_mode = tempNode.dNode.mode;
 	return 0;
 }
 
-/*
+
 static int rmdir_f(const char *path){
 	if(getPathNode(path, &tempNode)==0){
 		printf("\nrmdir_f: Invalid path");
@@ -467,10 +531,12 @@ static int rmdir_f(const char *path){
 	}
 	if(tempNode.dNode.numRecords>2){
 		printf("\nrmdir_f: Directory not empty.");
+		return -1;
 	}	
-	
+	unlink_f(path);
+	return 0;
 }
-*/
+
 
 static int open_f(const char *path, struct fuse_file_info *fi){
 	if(getPathNode(path, &tempNode)==0){
@@ -481,11 +547,43 @@ static int open_f(const char *path, struct fuse_file_info *fi){
 	return 0;
 }
 
-static int create_f(const char *path, mode_t md, struct fuse_file_info *fi);
+static int create_f(const char *path, mode_t md, struct fuse_file_info *fi){
+	char pathCopy[MAX_NAME_LEN * MAX_DIR_DEPTH];
+	char filePath[MAX_NAME_LEN * MAX_DIR_DEPTH];
+	char fileName[MAX_NAME_LEN];
+	unsigned int fileInodeNum;
+	struct memInode tempNode, newNode;
+	tempNode = pwdNode;
+	strcpy(fileName, basename(pathCopy));
+	strcpy(filePath, dirname(pathCopy));
+	if(getPathNode(filePath, &tempNode)==0){
+		printf("\nFailure to get Node");
+		return -1;
+	}
+	if(searchDir(fileName, tempNode)!=0){
+		printf("\nFile already exists");
+		return -1;
+	}
+	if((fileInodeNum = getFreeInode())==0){
+		printf("\nNo free inodes");
+		return -1;
+	}
+	if(getDiskNode(fileInodeNum, &newNode)==0){
+		printf("\nInvalid inode num: mkdir_f");
+		return -1;
+	}
+	addName(fileName, fileInodeNum, &tempNode);
+	diskSync(&tempNode);
+	if(pwdNode.inodeNum == tempNode.inodeNum){	// Making sure all in-memory copies of an inode are consistent 
+		pwdNode = tempNode;
+	}
+	return 0;
+}
 
 static int read_f(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fi){
 	char block[BLOCK_SIZE];
 	unsigned int k; 
+	int i;
 	struct memInode fileNode;
 	unsigned int startBlockNum;
 	unsigned int endBlockNum;
@@ -498,7 +596,7 @@ static int read_f(const char *path, char *buffer, size_t size, off_t offset, str
 	getBlock(fileNode.dNode.blockNums[startBlockNum], block);
 	memcpy(buffer, block + offset, BLOCK_SIZE - offset);
 	k += BLOCK_SIZE - offset;
-	for(int i=startBlockNum+1; i <= endBlockNum;i++){
+	for(i=startBlockNum+1; i <= endBlockNum;i++){
 		getBlock(fileNode.dNode.blockNums[i], block);
 		memcpy(buffer+k, block, BLOCK_SIZE);
 		k+= BLOCK_SIZE;
@@ -511,9 +609,9 @@ static int read_f(const char *path, char *buffer, size_t size, off_t offset, str
 }
 
 static int write_f(const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *fi){
-	char block[BLOCK_SIZE];
 	unsigned int k;
 	struct memInode fileNode;
+	unsigned int numBR; // number of blocks required
 	unsigned int startBlockNum, startOffset;
 	unsigned int endBlockNum, endOffset;
 	if(getPathNode(path, &fileNode)==0){
@@ -524,8 +622,34 @@ static int write_f(const char *path, const char *buffer, size_t size, off_t offs
 	startOffset = BLOCK_SIZE - offset%BLOCK_SIZE;
 	endBlockNum = (offset + size) / BLOCK_SIZE;
 	endOffset = (offset + size) % BLOCK_SIZE;
-	// Not complete	
-
+	if(endBlockNum>9){
+		printf("File too large");
+		return -1;
+	}
+	for(int i= fileNode.dNode.numBlocks; i <= endBlockNum; i++){	// To allocate extra blocks if needed
+		if((fileNode.dNode.blockNums[i] = getFreeData())==0){
+			return -1;
+		}
+	}
+	getBlock(fileNode.dNode.blockNums[startBlockNum], block);
+	k = (endBlockNum == startBlockNum)? endOffset - startOffset + 1: BLOCK_SIZE - startOffset; // Size to write in the first block
+	memcpy(block + startOffset, buffer, k);
+	putBlock(fileNode.dNode.blockNums[startBlockNum], block);
+	for(int i= startBlockNum + 1; i < endBlockNum; i++){
+		getBlock(fileNode.dNode.blockNums[i], block);
+		memcpy(block, buffer + k, BLOCK_SIZE);
+		putBlock(fileNode.dNode.blockNums[i], block);
+		k += BLOCK_SIZE;
+	}
+	if(endBlockNum != startBlockNum){
+		getBlock(fileNode.dNode.blockNums[endBlockNum], block);
+		memcpy(block, buffer + k, endOffset);
+		putBlock(fileNode.dNode.blockNums[endBlockNum], block);
+	}
+	if(fileNode.dNode.size <= endOffset){
+		fileNode.dNode.size = endOffset + 1; // Changing the file node details 
+	}
+	return 0; 
 }
 
 static int unlink_f(const char *path){
@@ -534,16 +658,15 @@ static int unlink_f(const char *path){
 	char filePath[MAX_NAME_LEN * MAX_DIR_DEPTH];
 	char fileName[MAX_NAME_LEN];
 	unsigned int fileInodeNum;
-	struct memInode dirNode, fileNode;
+	struct memInode dirNode;
 	dirNode = pwdNode;
 	strcpy(fileName, basename(pathCopy));
 	strcpy(filePath, dirname(pathCopy));
-	if(getPathNode(dirPath, &dirNode)==0){
-		printf("\nFailure to get Node");
+	if(getPathNode(filePath, &dirNode)==0){
+		printf("\nFailure to get directory Node");
 		return -1;
 	}
-	delName(fileName, dirNode);
-	release(fileNode);
+	delName(fileName, &dirNode);
 	return 0;
 }
 
@@ -557,6 +680,8 @@ int main(int argc, char *argv[]){
 	spBlk.flagSB = 0;
 	printf("\nRoot Inode: %d", spBlk.dSblk.rootInode);
 	getDiskNode(spBlk.dSblk.rootInode, &pwdNode);
+	buffer = malloc(BLOCK_SIZE);
+	block = malloc(BLOCK_SIZE);
 	fuse_main(argc, argv, &operations, NULL);
 	diskSync(&pwdNode);
 	return 0;
