@@ -8,10 +8,11 @@
 #include<sys/time.h>
 #include<limits.h>
 #include<math.h>
+#include<time.h>
 #define BLOCK_SIZE 512
 #define NUM_INODES 16
-#define NUM_INODE_BLOCKS 2 
-#define INODES_BLOCK 8
+#define NUM_INODE_BLOCKS 4
+#define INODES_BLOCK 4
 #define NUM_DATA_BLOCKS 32
 #define MAX_NAME_LEN 28
 #define NUM_DIRECT 10
@@ -21,7 +22,7 @@
 #define DATA_BM_SIZE sizeof(struct dataBit)
 #define MAX_DIR_DEPTH 20
 #define DIR_ENTRIES_BLOCK (BLOCK_SIZE/sizeof(dirRecord))
-#define NUM_BLOCKS 37
+#define NUM_BLOCKS 39
 
 const int inodeStartBlk = 4;
 const int dataStartBlk = 6;
@@ -39,30 +40,25 @@ struct dirRecord{
 	char name[MAX_NAME_LEN];
 };
 
-struct memSuperblock{
-	struct superblock dSblk;
-	unsigned int flagSB; // Flag for modified superblock
-};
-
 struct diskInode{
-	//struct timespec lastModified, lastAccessed, inodeModified;
-	unsigned int uid, gid;
-	unsigned int size, n_links;
+	unsigned int uid;
+	unsigned int gid;
+	unsigned int n_link;
 	unsigned int mode;
-	unsigned int numBlocks;
 	unsigned int blockNums[NUM_DIRECT];
-	unsigned int numRecords; // Required for directories
-	unsigned char type;	// Type to denote whether it is a regularfile, directory etc.
+	unsigned int numRecords;
+	int blockSize;
+	long size;
+	long numBlocks;
+	int 	aTime;
+	unsigned int aTimeNsec;
+	int	mTime;
+	unsigned int mTimeNsec;
+	int	cTime;
+	unsigned int cTimeNsec;
+	unsigned int type;
+	int filler[5];
 };
-
-struct memInode{
-	struct diskInode dNode;
-	unsigned int inodeNum;	// This field contains the inode number
-	unsigned int refCount;	// Reference count
-	unsigned char flagInode; // Flag for modified Inode
-	unsigned char flagFile; // Flag for modified file 
-};
-
 // For the flags 0 - not occupied, 1 - occupied
 
 struct inodeBit{		
@@ -90,11 +86,12 @@ static int putBlock(unsigned int blockNum, void *buffer){
 struct superblock spBlk;
 struct inodeBit ibmap;
 struct dataBit dbmap;
-struct dirRecord rootRec;
+struct dirRecord rootRec[2];
 struct diskInode root;
 
 
 int main(int argc, char *argv){
+	struct timespec currTime;
 	spBlk.fsSize = NUM_BLOCKS*BLOCK_SIZE;
 	spBlk.numFreeData = NUM_DATA_BLOCKS;
 	spBlk.numFreeInodes = NUM_INODES;
@@ -103,15 +100,28 @@ int main(int argc, char *argv){
 	spBlk.rootInode = 1;
 
 
-	rootRec.inodeNum = 1;
-	strcpy(rootRec.name, ".");
+	rootRec[0].inodeNum = 1;
+	strcpy(rootRec[0].name, ".");
+	rootRec[1].inodeNum = 1;
+	strcpy(rootRec[1].name, "..");
 
-	root.uid = 0;
-	root.gid = 0;
-	root.size = 0;
-	root.numBlocks = 1;
+	clock_gettime(CLOCK_REALTIME, &currTime);
+
+	root.uid = getuid();
+	root.gid = getgid();
+	root.n_link = 1;
+	root.mode = 0;
 	root.blockNums[0] = 5;
-	root.numRecords = 1;
+	root.numRecords = 2;
+	root.blockSize = BLOCK_SIZE;
+	root.size = 2*sizeof(struct dirRecord);
+	root.numBlocks = 1;
+	root.aTime = currTime.tv_sec;
+	root.aTimeNsec = currTime.tv_nsec;
+	root.mTime = currTime.tv_sec;
+	root.mTimeNsec = currTime.tv_nsec;
+	root.cTime = currTime.tv_sec;
+	root.cTimeNsec = currTime.tv_nsec;
 	root.type = 2; // 2 for directory
 
 
@@ -129,6 +139,7 @@ int main(int argc, char *argv){
 	fwrite(&dbmap, sizeof(struct dataBit), 1, fsp);
 	fwrite(&root, sizeof(struct diskInode), 1, fsp);
 	fseek(fsp, BLOCK_SIZE*5, SEEK_SET);
-	fwrite(&rootRec, sizeof(struct dirRecord), 1, fsp);
+	fwrite(rootRec, sizeof(struct dirRecord), 2, fsp);
+	fclose(fsp);
 	return 0;
 }
