@@ -25,7 +25,7 @@
 #define NUM_BLOCKS 39
 
 const int inodeStartBlk = 4;
-const int dataStartBlk = 6;
+const int dataStartBlk = 8;
 
 FILE *fsp = NULL;
 
@@ -110,8 +110,8 @@ int main(int argc, char *argv){
 	root.uid = getuid();
 	root.gid = getgid();
 	root.n_link = 1;
-	root.mode = 0;
-	root.blockNums[0] = 5;
+	root.mode = S_IFDIR | 0777;
+	root.blockNums[0] = 8;
 	root.numRecords = 2;
 	root.blockSize = BLOCK_SIZE;
 	root.size = 2*sizeof(struct dirRecord);
@@ -138,7 +138,7 @@ int main(int argc, char *argv){
 	fwrite(&ibmap, sizeof(struct inodeBit), 1, fsp);
 	fwrite(&dbmap, sizeof(struct dataBit), 1, fsp);
 	fwrite(&root, sizeof(struct diskInode), 1, fsp);
-	fseek(fsp, BLOCK_SIZE*5, SEEK_SET);
+	fseek(fsp, BLOCK_SIZE*7, SEEK_SET);
 	fwrite(rootRec, sizeof(struct dirRecord), 2, fsp);
 	fclose(fsp);
 	return 0;

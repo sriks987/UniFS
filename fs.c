@@ -27,7 +27,7 @@
 #define DIR_ENTRIES_BLOCK (BLOCK_SIZE/sizeof(struct dirRecord))
 
 const int inodeStartBlk = 4;
-const int dataStartBlk = 6;
+const int dataStartBlk = 8;
 
 FILE *fsp = NULL;
 struct memSuperblock spBlk;
@@ -135,6 +135,10 @@ static int unlink_f(const char *path);
 static int getBlock(unsigned int blockNum, void *buffer);	// To get a block of memory
 static int putBlock(unsigned int blockNum, void *buffer);	// To write a block of memory
 
+// Superblock functions
+
+static int syncSuper(struct memSuperblock *spBlk);
+
 // Free Block functions
 
 static unsigned int getFreeInode();	// Function to get a free Inode 
@@ -151,6 +155,16 @@ static int initDiskInode(unsigned int type, struct memInode *currNode);	// To in
 static int swapNode(unsigned int inodeNum, struct memInode *currNode);	// To swap the current inode in memory for another inode in the disk
 static int diskSync(struct memInode *currNode);				// Function to sync the in-memory inode to disk
 static int unlinkInode(unsigned int inodeNum);
+#ifdef DEBUG
+static int inodeDetails(struct memInode currNode){
+	printf("Inode details\nuid: %u\ngid: %u\nn_link: %u\nmode: %u\n",currNode.dNode.uid, currNode.dNode.gid, currNode.dNode.n_link, currNode.dNode.mode);
+	for(int i = 0; i< NUM_DIRECT; i++){
+		printf("blockNums[%d]: %u\n", i, currNode.dNode.blockNums[i]);
+	}
+	printf("numRecords: %u\nblockSize: %d\nsize: %ld\nnumBlocks: %ld\naTime: %d\naTimeNsec: %u\nmTime: %d\nmTimeNsec: %u\ncTime: %d\ncTimeNsec: %u\ntype: %u\n", currNode.dNode.numRecords, currNode.dNode.blockSize, currNode.dNode.size, currNode.dNode.numBlocks, currNode.dNode.aTime, currNode.dNode.aTimeNsec, currNode.dNode.mTime, currNode.dNode.mTimeNsec, currNode.dNode.cTime, currNode.dNode.cTimeNsec, currNode.dNode.type);
+	return 1;
+}
+#endif
 
 // Directory functions
 
@@ -175,6 +189,12 @@ static struct fuse_operations operations = {
 
 // Function definitions
 
+#ifdef DEBUG
+int dummyfn() {
+    return 0;
+}
+#endif
+
 // Block functions
 
 static int getBlock(unsigned int blockNum, void *buffer){
@@ -186,6 +206,14 @@ static int getBlock(unsigned int blockNum, void *buffer){
 static int putBlock(unsigned int blockNum, void *buffer){
 	fseek(fsp, (blockNum-1)*BLOCK_SIZE, SEEK_SET);
 	fwrite((char*)buffer, BLOCK_SIZE, 1, fsp);
+	return 1;
+}
+
+// Superblock functions
+
+static int syncSuper(struct memSuperblock *spBlk){
+	putBlock(1, &(spBlk->dSblk));
+	spBlk->flagSB = 0;
 	return 1;
 }
 
@@ -209,7 +237,11 @@ static unsigned int getFreeInode(){
 			break;
 		}
 	}
+#ifdef DEBUG
+	printf("getFreeInode: Returned inodenumber: %d\n", inodeNum);
+#endif
 	putBlock(spBlk.dSblk.inodeBMap, &bitMap);
+	syncSuper(&spBlk);
 	return inodeNum;
 }
 
@@ -217,20 +249,24 @@ static unsigned int getFreeData(){
 	struct dataBit bitMap;
 	unsigned int blockNum;
 	if(spBlk.dSblk.numFreeData==0){
-		printf("\ngetFreeData: No free inodes");
+		printf("\ngetFreeData: No free data Blocks\n");
 		return 0;
 	}
 	getBlock(spBlk.dSblk.dataBMap, &bitMap);
 	for(unsigned int i=0; i< NUM_DATA_BLOCKS; i++){
 		if(bitMap.flag[i]==0){
 			bitMap.flag[i]=1;
-			blockNum = i+1;
+			blockNum = i + dataStartBlk;	
 			spBlk.dSblk.numFreeData--;
 			spBlk.flagSB=1;
 			break;
 		}
 	}
+#ifdef DEBUG
+	printf("getFreeData: Returned blocknumber: %d\n", blockNum);
+#endif
 	putBlock(spBlk.dSblk.dataBMap, &bitMap);
+	syncSuper(&spBlk);
 	return blockNum;
 }
 
@@ -244,6 +280,7 @@ static int releaseData(unsigned int *blockList, int len){
 	spBlk.dSblk.numFreeData += len;
 	spBlk.flagSB = 1;
 	putBlock(spBlk.dSblk.dataBMap, &bitMap);
+	syncSuper(&spBlk);
 	return 1;
 }
 
@@ -259,6 +296,7 @@ static int releaseInode(struct memInode *currNode){
 	getBlock(spBlk.dSblk.inodeBMap, &bitMap);
 	bitMap.flag[currNode->inodeNum - 1] = 0;
 	putBlock(spBlk.dSblk.inodeBMap, &bitMap);
+	syncSuper(&spBlk);
 	return 1;
 }
 
@@ -273,8 +311,11 @@ static int swapNode(unsigned int inodeNum, struct memInode *currNode){
 static int diskSync(struct memInode *currNode){
 	unsigned int blockNum, offset;
 	struct diskInode inodeArr[INODES_BLOCK];
-	blockNum = (currNode->inodeNum / INODES_BLOCK) + inodeStartBlk;
-	offset = currNode->inodeNum % INODES_BLOCK;
+	blockNum = ((currNode->inodeNum-1) / INODES_BLOCK) + inodeStartBlk;
+	offset = (currNode->inodeNum-1) % INODES_BLOCK;
+#ifdef DEBUG
+	printf("diskSync: inodeNum: %u\tblockNum: %u\toffset: %u\n", currNode->inodeNum, blockNum, offset);
+#endif
 	getBlock(blockNum, inodeArr);
 	inodeArr[offset] = currNode->dNode;
 	putBlock(blockNum, inodeArr);
@@ -287,6 +328,7 @@ static int initMemInode(struct memInode *currNode, struct diskInode dNode, unsig
 	currNode->inodeNum = inodeNum;
 	currNode->refCount = 1;		// As it is being reference by the current process
 	currNode->flagInode = 0;
+	return 1;
 }
 
 static int initDiskInode(unsigned int type, struct memInode *currNode){	
@@ -295,7 +337,12 @@ static int initDiskInode(unsigned int type, struct memInode *currNode){
 	currNode->dNode.uid = getuid();
 	currNode->dNode.gid = getgid();
 	currNode->dNode.n_link = 1;
-	currNode->dNode.mode = 0;
+	if(type==2){
+		currNode->dNode.mode = S_IFDIR | 0766;
+	}
+	else{
+		currNode->dNode.mode = S_IFREG | 0777;
+	}
 	currNode->dNode.numRecords = 0;
 	currNode->dNode.blockSize = BLOCK_SIZE;
 	currNode->dNode.size = 0;
@@ -307,6 +354,9 @@ static int initDiskInode(unsigned int type, struct memInode *currNode){
 	currNode->dNode.cTime = currTime.tv_sec;
 	currNode->dNode.cTimeNsec = currTime.tv_nsec;
 	currNode->dNode.type = type;
+#ifdef DEBUG
+	inodeDetails(*currNode);
+#endif
 	return 1;
 }
 
@@ -335,17 +385,17 @@ static int getPathNode(const char *path, struct memInode *currNode){
 	unsigned int countNames, inodeNum;
 	struct memInode tempNode;
 #ifdef DEBUG
-	printf("\ngetPathNode: path: %s", path);
+	printf("\ngetPathNode: path: %s\n", path);
 #endif
 	if(getNames(path, &countNames, names)==0){
 		printf("getPathNode: Error parsing path\n");
 		return 0;
 	}
 	printf("getPathNode: countNames: %d\n", countNames);
-	printf("getPathNode: names[%d]: %s\n", countNames-1, names[countNames-1]);
+	printf("getPathNode: Names[%d]: %s\n", countNames-1, names[countNames-1]);
 	if(strcmp(names[countNames-1],"/")==0){
 		if(getDiskNode(spBlk.dSblk.rootInode, &tempNode)==0){	// Fetching the root inode 
-			printf("\ngetPathNode: Failure to get root inode");
+			printf("getPathNode: Failure to get root inode\n");
 			return 0;
 		}
 	}
@@ -355,15 +405,15 @@ static int getPathNode(const char *path, struct memInode *currNode){
 	else if(strcmp(names[countNames-1],"..")==0){
 		inodeNum = searchDir(names[0], tempNode);
 		if(getDiskNode(inodeNum, &tempNode)==0){
-			printf("\ngetPathNode: Failure to get parent inode");
+			printf("getPathNode: Failure to get parent inode\n");
 			return 0;
 		}
 	}
 	for(int i=countNames-2; i>=0; i--){
-		printf("\ngetPathNode: Names[%d]: %s", i, names[i]); 
+		printf("getPathNode: Names[%d]: %s\n", i, names[i]); 
 		inodeNum = searchDir(names[i], tempNode);
 		if(inodeNum==0){
-			printf("\ngetPathNode: Invalid path");
+			printf("getPathNode: Invalid path\n");
 			return 0;
 		}
 		swapNode(inodeNum, &tempNode);	// To get the child node 
@@ -422,6 +472,10 @@ static int getDirRecs(struct memInode currNode, struct dirRecord *list){
 		for(int j=0; j< numEntries && k<numRecords; j++){
 			if(buf[j].inodeNum!=0){
 				list[k] = buf[j];
+				k++;
+#ifdef DEBUG
+				printf("getDirRecs : list[%d] = Name: %s\t inodeNum: %u\n", k-1, buf[j].name, buf[j].inodeNum);
+#endif
 			}
 		}
 	}
@@ -469,6 +523,7 @@ static int addName(char *name, unsigned int inodeNum, struct memInode *currNode)
 		getBlock(blockNum, recs);		// Reading a block of records
 		for(; j < currNode->dNode.numRecords; j++){
 			if(recs[j % DIR_ENTRIES_BLOCK].inodeNum == 0){
+				memset(&recs[j % DIR_ENTRIES_BLOCK], 0, sizeof(struct dirRecord));
 				recs[j % DIR_ENTRIES_BLOCK].inodeNum = inodeNum;
 				strcpy(recs[j % DIR_ENTRIES_BLOCK].name, name);
 				currNode->dNode.numRecords++;
@@ -478,7 +533,8 @@ static int addName(char *name, unsigned int inodeNum, struct memInode *currNode)
 			}
 		}
 	}
-	if(flag==0){
+	if(flag==0){	// If we have to append to the data in the last block
+		memset(&recs[j % DIR_ENTRIES_BLOCK], 0, sizeof(struct dirRecord));
 		recs[j % DIR_ENTRIES_BLOCK].inodeNum = inodeNum;
 		strcpy(recs[j % DIR_ENTRIES_BLOCK].name, name);
 		currNode->dNode.numRecords++;
@@ -560,6 +616,10 @@ static int mkdir_f(const char *path, mode_t fileMode){
 	addName(".", dirInodeNum, &newNode);
 	addName("..", tempNode.inodeNum, &newNode);
 	diskSync(&newNode);	// Writing all the changes to persistent storage
+#ifdef DEBUG
+	printf("mkdir_f: NewDir details\n");
+	printf("inodeNum: %d\tDirname: %s\tblock: %d\n\n", dirInodeNum, dirName, newNode.dNode.blockNums[0]);
+#endif
 	return 0;
 }
 
@@ -569,7 +629,7 @@ static int readdir_f(const char *path, void *buffer, fuse_fill_dir_t filler, off
 #endif
 	unsigned int numRecords;
 	unsigned int inodeNum;
-	struct dirRecord *list = malloc(sizeof(struct dirRecord)*(numRecords+1));
+	struct dirRecord *list;
 	struct memInode tempNode = pwdNode;
 
 	if(getPathNode(path, &tempNode)==0){
@@ -581,16 +641,24 @@ static int readdir_f(const char *path, void *buffer, fuse_fill_dir_t filler, off
 		return -1;
 	}
 	numRecords = tempNode.dNode.numRecords;
+	list = malloc(sizeof(struct dirRecord)*(numRecords+1));
 	getDirRecs(tempNode, list);
-	for(int i=0; i < numRecords; i++){
+	for(int i=2; i < numRecords; i++){		// Exluding the entires . and ..
 		filler(buffer, list[i].name, NULL, 0);
+#ifdef DEBUG
+		printf ("readdir_f : Copying direntry %s using filler\n", list[i].name);
+#endif
 	}
+#ifdef DEBUG
+	dummyfn();
+#endif
+	free(list);
 	return 0;
 }
 
 static int getattr_f(const char *path, struct stat *st){
 #ifdef DEBUG
-	printf("Entered getattr_f: path: %s, st: 0x%p\n", path, st);
+	printf("\nEntered getattr_f: path: %s, st: 0x%p\n", path, st);
 #endif
 	struct memInode tempNode = pwdNode;
 	memset(st, 0, sizeof(struct stat));
@@ -606,13 +674,7 @@ static int getattr_f(const char *path, struct stat *st){
 	st->st_gid = tempNode.dNode.gid;
 	st->st_ino = tempNode.inodeNum;
 	st->st_nlink = tempNode.dNode.n_link; 
-	//st->st_mode = tempNode.dNode.mode;
-	if(strcmp(path, "/")==0){
-		st->st_mode = S_IFDIR | 0755;
-	}
-	else{
-		st->st_mode = S_IFREG | 0777;
-	}
+	st->st_mode = tempNode.dNode.mode;
 	st->st_blksize = BLOCK_SIZE;
 	st->st_size = tempNode.dNode.size;
 	st->st_blocks = tempNode.dNode.numBlocks;
@@ -623,9 +685,9 @@ static int getattr_f(const char *path, struct stat *st){
 	st->st_ctime = tempNode.dNode.cTime;
 	//st->st_ctime_nsec = tempNode.dNode.cTimeNsec;
 #ifdef DEBUG
-	printf("Struct stat: \n st_uid: %u\nst_gid: %u\nst_ino: %u\nst_nlink: %lu\n", st->st_uid, st->st_gid, st->st_ino, st->st_nlink);
+	printf("Struct stat: \ninodeNum: %u\nst_uid: %u\nst_gid: %u\nst_ino: %u\nst_nlink: %lu\n", tempNode.inodeNum, st->st_uid, st->st_gid, st->st_ino, st->st_nlink);
 	printf("\n");
-	printf("stat: %x", st);
+	printf("stat: %x\n", st);
 #endif
 	return 0;
 }
@@ -674,6 +736,7 @@ static int create_f(const char *path, mode_t md, struct fuse_file_info *fi){
 #endif
 
 	dirNode = pwdNode;
+	strcpy(pathCopy, path);
 	strcpy(fileName, basename(pathCopy));
 	strcpy(filePath, dirname(pathCopy));
 	if(getPathNode(filePath, &dirNode)==0){
@@ -698,12 +761,18 @@ static int create_f(const char *path, mode_t md, struct fuse_file_info *fi){
 	if(pwdNode.inodeNum == dirNode.inodeNum){	// Making sure all in-memory copies of an inode are consistent 
 		pwdNode = dirNode;
 	}
+	diskSync(&newNode);
+#ifdef DEBUG
+	printf("Details after file creation\n");
+	inodeDetails(newNode);
+	printf("create_f: newfile details\nInode number: %d\nfile Name: %s\n", fileInodeNum, fileName);
+#endif
 	return 0;
 }
 
 static int read_f(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fi){
 	char *block;
-	unsigned int k; 
+	unsigned int k = 0; 
 	int i;
 	struct memInode fileNode;
 	unsigned int startBlockNum;
@@ -721,13 +790,13 @@ static int read_f(const char *path, char *buffer, size_t size, off_t offset, str
 	getBlock(fileNode.dNode.blockNums[startBlockNum], block);
 	memcpy(buffer, block + offset, BLOCK_SIZE - offset);
 	k += BLOCK_SIZE - offset;
-	for(i=startBlockNum+1; i <= endBlockNum;i++){
+	for(i=startBlockNum+1; i < endBlockNum;i++){
 		getBlock(fileNode.dNode.blockNums[i], block);
 		memcpy(buffer+k, block, BLOCK_SIZE);
 		k+= BLOCK_SIZE;
 	}
-	if((size+offset)%BLOCK_SIZE!=0){
-		getBlock(fileNode.dNode.blockNums[i], block);
+	if(/*(size+offset)%BLOCK_SIZE!=0*/ endBlockNum!= startBlockNum){
+		getBlock(fileNode.dNode.blockNums[endBlockNum], block);
 		memcpy(buffer+k, block, (size+offset)%BLOCK_SIZE);
 	}
 	free(block);
@@ -737,7 +806,6 @@ static int read_f(const char *path, char *buffer, size_t size, off_t offset, str
 static int write_f(const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *fi){
 	unsigned int k;
 	struct memInode fileNode;
-	unsigned int numBR; // number of blocks required
 	unsigned int startBlockNum, startOffset;
 	unsigned int endBlockNum, endOffset;
 	char *block = NULL;
@@ -749,10 +817,10 @@ static int write_f(const char *path, const char *buffer, size_t size, off_t offs
 		return -ENOENT;
 	}
 	startBlockNum = offset/BLOCK_SIZE;
-	startOffset = BLOCK_SIZE - offset % BLOCK_SIZE;
-	endBlockNum = (offset + size) / BLOCK_SIZE;
-	endOffset = (offset + size) % BLOCK_SIZE;
-	if(endBlockNum>9){
+	startOffset = offset % BLOCK_SIZE;
+	endBlockNum = (offset + size - 1) / BLOCK_SIZE;
+	endOffset = (offset + size - 1) % BLOCK_SIZE;
+	if(endBlockNum > (NUM_DIRECT-1)){
 		printf("\nwrite_f: File too large");
 		return -ENOENT;
 	}
@@ -764,6 +832,9 @@ static int write_f(const char *path, const char *buffer, size_t size, off_t offs
 	block = malloc(BLOCK_SIZE);
 	getBlock(fileNode.dNode.blockNums[startBlockNum], block);
 	k = (endBlockNum == startBlockNum)? endOffset - startOffset + 1: BLOCK_SIZE - startOffset; // Size to write in the first block
+#ifdef DEBUG
+	printf("write_f: k: %u\nstartBlockNum: %u\tstartOffset: %u\nendBlockNum: %u\tendOffset: %u\n", k, startBlockNum, startOffset, endBlockNum, endOffset);
+#endif
 	memcpy(block + startOffset, buffer, k);
 	putBlock(fileNode.dNode.blockNums[startBlockNum], block);
 	for(int i= startBlockNum + 1; i < endBlockNum; i++){
@@ -781,7 +852,11 @@ static int write_f(const char *path, const char *buffer, size_t size, off_t offs
 		fileNode.dNode.size = endOffset + 1; // Changing the file node details 
 	}
 	free(block);
-	return 0; 
+	diskSync(&fileNode);
+#ifdef DEBUG
+	printf("write_f: New file size: %d\n", fileNode.dNode.size);
+#endif
+	return size; 
 }
 
 static int unlink_f(const char *path){
@@ -792,6 +867,7 @@ static int unlink_f(const char *path){
 	unsigned int fileInodeNum;
 	struct memInode dirNode;
 	dirNode = pwdNode;
+	strcpy(pathCopy, path);
 	strcpy(fileName, basename(pathCopy));
 	strcpy(filePath, dirname(pathCopy));
 	if(getPathNode(filePath, &dirNode)==0){
@@ -799,6 +875,7 @@ static int unlink_f(const char *path){
 		return -ENOENT;
 	}
 	delName(fileName, &dirNode);
+	diskSync(&dirNode);
 	return 0;
 }
 
