@@ -1,17 +1,17 @@
 #define FUSE_USE_VERSION 26
-#include<fuse.h>
-#include<stdlib.h>
-#include<stdio.h>
-#include<string.h>
-#include<unistd.h>
-#include<fcntl.h>
-#include<libgen.h>
-#include<sys/types.h>
-#include<sys/time.h>
-#include<limits.h>
-#include<math.h>
-#include<errno.h>
-#include<time.h>
+#include <fuse.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <libgen.h>
+#include <sys/types.h>
+#include <sys/time.h>
+#include <limits.h>
+#include <math.h>
+#include <errno.h>
+#include <time.h>
 #define BLOCK_SIZE 512
 #define NUM_INODES 16
 #define NUM_INODE_BLOCKS 4 
@@ -29,7 +29,7 @@
 const int inodeStartBlk = 4;
 const int dataStartBlk = 8;
 
-FILE *fsp = NULL;
+int fsp;
 struct memSuperblock spBlk;
 struct memInode pwdNode;
 
@@ -198,14 +198,14 @@ int dummyfn() {
 // Block functions
 
 static int getBlock(unsigned int blockNum, void *buffer){
-	fseek(fsp, (blockNum-1)*BLOCK_SIZE, SEEK_SET);
-	fread((char*)buffer, BLOCK_SIZE, 1, fsp);
+	lseek(fsp, (blockNum-1)*BLOCK_SIZE, SEEK_SET);
+	read(fsp, buffer, BLOCK_SIZE);
 	return 1;
 }
 
 static int putBlock(unsigned int blockNum, void *buffer){
-	fseek(fsp, (blockNum-1)*BLOCK_SIZE, SEEK_SET);
-	fwrite((char*)buffer, BLOCK_SIZE, 1, fsp);
+	lseek(fsp, (blockNum-1)*BLOCK_SIZE, SEEK_SET);
+	write(fsp, buffer, BLOCK_SIZE);
 	return 1;
 }
 
@@ -293,9 +293,11 @@ static int releaseInode(struct memInode *currNode){
 	}
 	releaseData(blockList, numBlocks);
 	free(blockList);
+        currNode->dNode.type = 0;
+        diskSync(currNode);
 	getBlock(spBlk.dSblk.inodeBMap, &bitMap);
 	bitMap.flag[currNode->inodeNum - 1] = 0;
-	putBlock(spBlk.dSblk.inodeBMap, &bitMap);
+        putBlock(spBlk.dSblk.inodeBMap, &bitMap);
 	syncSuper(&spBlk);
 	return 1;
 }
@@ -438,23 +440,26 @@ static int unlinkInode(unsigned int inodeNum){
 
 static int delName(char *name, struct memInode *currNode){
 	struct dirRecord recs[DIR_ENTRIES_BLOCK];
-	int j=0;
+	int j=0, k=0;
 	int flag = 0;
 	unsigned int inodeNum = 0;
 	unsigned int blockNum = 0;
 	for(int i=0;i<NUM_DIRECT && i< currNode->dNode.numBlocks; i++){
 		blockNum = currNode->dNode.blockNums[i];
 		getBlock(blockNum, recs);		// Reading a block of records
-		for(; j < currNode->dNode.numRecords; j++){
-			if(strcmp(recs[j % DIR_ENTRIES_BLOCK].name, name)==0){
-				inodeNum = recs[j % DIR_ENTRIES_BLOCK].inodeNum;
-				recs[j % DIR_ENTRIES_BLOCK].inodeNum = 0;	
-				currNode->dNode.numRecords--;
-				putBlock(blockNum, recs);
-				unlinkInode(inodeNum);	// To release the inode and all the blocks associated with it
-				flag=1;
-				return 1;
-			}
+		for(j = 0;j < DIR_ENTRIES_BLOCK && k < currNode->dNode.numRecords; j++){
+                        if(recs[j].inodeNum != 0){
+                                k++;
+			        if(strcmp(recs[j].name, name)==0){
+			        	inodeNum = recs[j].inodeNum;
+			        	recs[j].inodeNum = 0;	
+			        	currNode->dNode.numRecords--;
+			        	putBlock(blockNum, recs);
+			        	unlinkInode(inodeNum);	// To release the inode and all the blocks associated with it
+			        	flag=1;
+				        return 1;
+                                }			        
+                        }
 		}
 	}
 	return 0;
@@ -828,6 +833,7 @@ static int write_f(const char *path, const char *buffer, size_t size, off_t offs
 		if((fileNode.dNode.blockNums[i] = getFreeData())==0){
 			return -ENOENT;
 		}
+		fileNode.dNode.numBlocks++;
 	}
 	block = malloc(BLOCK_SIZE);
 	getBlock(fileNode.dNode.blockNums[startBlockNum], block);
@@ -848,8 +854,8 @@ static int write_f(const char *path, const char *buffer, size_t size, off_t offs
 		memcpy(block, buffer + k, endOffset);
 		putBlock(fileNode.dNode.blockNums[endBlockNum], block);
 	}
-	if(fileNode.dNode.size <= endOffset){
-		fileNode.dNode.size = endOffset + 1; // Changing the file node details 
+	if(fileNode.dNode.size <= offset + size -1){
+		fileNode.dNode.size = offset + size; // Changing the file node details 
 	}
 	free(block);
 	diskSync(&fileNode);
@@ -860,7 +866,7 @@ static int write_f(const char *path, const char *buffer, size_t size, off_t offs
 }
 
 static int unlink_f(const char *path){
-	printf("\nEntered unlink_f");
+	printf("\nEntered unlink_f path: %s", path);
 	char pathCopy[MAX_NAME_LEN * MAX_DIR_DEPTH];
 	char filePath[MAX_NAME_LEN * MAX_DIR_DEPTH];
 	char fileName[MAX_NAME_LEN];
@@ -881,9 +887,9 @@ static int unlink_f(const char *path){
 
 
 int main(int argc, char *argv[]){
-	fsp = NULL;
-	fsp = fopen("M", "rb+");
-	if(fsp == NULL)
+	//fsp = NULL;
+	fsp = open("M", O_RDWR);
+	if(fsp <= -1)
 		perror("open");
 	umask(0);
 	getBlock(1, &(spBlk.dSblk));
@@ -894,7 +900,8 @@ int main(int argc, char *argv[]){
 //	printf("struct superblock: %lu\nstruct dirRecord: %lu\nstruct memSuperblock: %lu\nstruct diskInode: %lu\nstruct memInode: %lu\nstruct inodeBit: %lu\nstruct dataBit: %lu\n", sizeof(struct superblock), sizeof(struct dirRecord), sizeof(struct memSuperblock), sizeof(struct diskInode), sizeof(struct memInode), sizeof(struct inodeBit), sizeof(struct dataBit));
 	fuse_main(argc, argv, &operations, NULL);
 	diskSync(&pwdNode);
-	fclose(fsp);
+	//close(fsp);
+	if(close(fsp)!=0)
+		perror("close");
 	return 0;
 }
-
