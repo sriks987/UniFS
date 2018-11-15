@@ -27,7 +27,7 @@
 const int inodeStartBlk = 4;
 const int dataStartBlk = 8;
 
-FILE *fsp = NULL;
+int fsp;
 
 struct superblock{		// Block number 1		
 	unsigned long int fsSize;
@@ -71,17 +71,7 @@ struct dataBit{
 	char filler[BLOCK_SIZE - NUM_DATA_BLOCKS];
 };
 
-static int getBlock(unsigned int blockNum, void *buffer){
-	fseek(fsp, blockNum*BLOCK_SIZE, SEEK_SET);
-	fread((char*)buffer, BLOCK_SIZE, 1, fsp);
-	return 1;
-}
 
-static int putBlock(unsigned int blockNum, void *buffer){
-	fseek(fsp, blockNum*BLOCK_SIZE, SEEK_SET);
-	fwrite((char*)buffer, BLOCK_SIZE, 1, fsp);
-	return 1;
-}
 
 struct superblock spBlk;
 struct inodeBit ibmap;
@@ -91,6 +81,8 @@ struct diskInode root;
 
 
 int main(int argc, char *argv){
+        unsigned char *buffer = malloc(BLOCK_SIZE);
+
 	struct timespec currTime;
 	spBlk.fsSize = NUM_BLOCKS*BLOCK_SIZE;
 	spBlk.numFreeData = NUM_DATA_BLOCKS;
@@ -125,8 +117,11 @@ int main(int argc, char *argv){
 	root.type = 2; // 2 for directory
 
 
-	FILE *fsp = fopen("M", "wb+");
-	fwrite(&spBlk, sizeof(struct superblock), 1, fsp);
+	fsp = open("M", O_CREAT | O_TRUNC | O_RDWR, 0777);
+	if(fsp<0){
+		printf("Error in open");
+	}
+	write(fsp, &spBlk, sizeof(struct superblock));
 	for(int i=0; i< NUM_INODES; i++){
 		ibmap.flag[i] = 0;
 	}
@@ -135,11 +130,15 @@ int main(int argc, char *argv){
 	}
 	ibmap.flag[0] = 1;
 	dbmap.flag[0] = 1;
-	fwrite(&ibmap, sizeof(struct inodeBit), 1, fsp);
-	fwrite(&dbmap, sizeof(struct dataBit), 1, fsp);
-	fwrite(&root, sizeof(struct diskInode), 1, fsp);
-	fseek(fsp, BLOCK_SIZE*7, SEEK_SET);
-	fwrite(rootRec, sizeof(struct dirRecord), 2, fsp);
-	fclose(fsp);
+	write(fsp, &ibmap, sizeof(struct inodeBit));
+	write(fsp, &dbmap, sizeof(struct dataBit));
+        memset(buffer, 0, BLOCK_SIZE);
+        memcpy(buffer, &root, sizeof(struct diskInode));
+	write(fsp, buffer, BLOCK_SIZE);
+	lseek(fsp, BLOCK_SIZE*7, SEEK_SET);
+        memset(buffer, 0, BLOCK_SIZE);
+        memcpy(buffer, &rootRec, sizeof(struct dirRecord)*2);
+	write(fsp, buffer, BLOCK_SIZE);
+	close(fsp);
 	return 0;
 }
