@@ -31,8 +31,6 @@ const int dataStartBlk = 8;
 
 int fsp;
 struct memSuperblock spBlk;
-struct memInode pwdNode;
-
 
 /*
 struct stat {
@@ -155,6 +153,7 @@ static int initDiskInode(unsigned int type, struct memInode *currNode);	// To in
 static int swapNode(unsigned int inodeNum, struct memInode *currNode);	// To swap the current inode in memory for another inode in the disk
 static int diskSync(struct memInode *currNode);				// Function to sync the in-memory inode to disk
 static int unlinkInode(unsigned int inodeNum);
+
 #ifdef DEBUG
 static int inodeDetails(struct memInode currNode){
 	printf("Inode details\nuid: %u\ngid: %u\nn_link: %u\nmode: %u\n",currNode.dNode.uid, currNode.dNode.gid, currNode.dNode.n_link, currNode.dNode.mode);
@@ -401,15 +400,8 @@ static int getPathNode(const char *path, struct memInode *currNode){
 			return 0;
 		}
 	}
-	else if(strcmp(names[countNames-1],".")==0){
-		tempNode = *currNode;
-	}
-	else if(strcmp(names[countNames-1],"..")==0){
-		inodeNum = searchDir(names[0], tempNode);
-		if(getDiskNode(inodeNum, &tempNode)==0){
-			printf("getPathNode: Failure to get parent inode\n");
-			return 0;
-		}
+	else{
+		printf("getPathNode: FUSE gave invalid path\n");
 	}
 	for(int i=countNames-2; i>=0; i--){
 		printf("getPathNode: Names[%d]: %s\n", i, names[i]); 
@@ -591,10 +583,11 @@ static int mkdir_f(const char *path, mode_t fileMode){
 	char dirName[MAX_NAME_LEN];
 	unsigned int dirInodeNum;
 	struct memInode tempNode, newNode;
-	tempNode = pwdNode;
+
 	strcpy(pathCopy, path);
 	strcpy(dirName, basename(pathCopy));
 	strcpy(dirPath, dirname(pathCopy));
+
 	printf("dirName: %s\n dirPath: %s\n", dirName, dirPath);
 	if(getPathNode(dirPath, &tempNode)==0){
 		printf("mkdir_f: Failure to get Node\n");
@@ -615,9 +608,6 @@ static int mkdir_f(const char *path, mode_t fileMode){
 	initDiskInode(2, &newNode);			// Initializing the new inode to a directory
 	addName(dirName, dirInodeNum, &tempNode);
 	diskSync(&tempNode);
-	if(pwdNode.inodeNum == tempNode.inodeNum){	// Making sure all in-memory copies of an inode are consistent 
-		pwdNode = tempNode;
-	}
 	addName(".", dirInodeNum, &newNode);
 	addName("..", tempNode.inodeNum, &newNode);
 	diskSync(&newNode);	// Writing all the changes to persistent storage
@@ -635,7 +625,7 @@ static int readdir_f(const char *path, void *buffer, fuse_fill_dir_t filler, off
 	unsigned int numRecords;
 	unsigned int inodeNum;
 	struct dirRecord *list;
-	struct memInode tempNode = pwdNode;
+	struct memInode tempNode;
 
 	if(getPathNode(path, &tempNode)==0){
 		printf("readdir_f: Invalid path\n");
@@ -665,7 +655,7 @@ static int getattr_f(const char *path, struct stat *st){
 #ifdef DEBUG
 	printf("\nEntered getattr_f: path: %s, st: 0x%p\n", path, st);
 #endif
-	struct memInode tempNode = pwdNode;
+	struct memInode tempNode;
 	memset(st, 0, sizeof(struct stat));
 	if(strcmp(path, "/.xdg-volume-info")==0 || strcmp(path, "/autorun.inf")==0 || strcmp(path, "/.Trash")==0){
 		printf("getattr_f: xdg or autorun access\n");
@@ -740,7 +730,6 @@ static int create_f(const char *path, mode_t md, struct fuse_file_info *fi){
 	printf("Entered create_f: path: %s\n", path);
 #endif
 
-	dirNode = pwdNode;
 	strcpy(pathCopy, path);
 	strcpy(fileName, basename(pathCopy));
 	strcpy(filePath, dirname(pathCopy));
@@ -763,9 +752,6 @@ static int create_f(const char *path, mode_t md, struct fuse_file_info *fi){
 	initDiskInode(1, &newNode);
 	addName(fileName, fileInodeNum, &dirNode);
 	diskSync(&dirNode);
-	if(pwdNode.inodeNum == dirNode.inodeNum){	// Making sure all in-memory copies of an inode are consistent 
-		pwdNode = dirNode;
-	}
 	diskSync(&newNode);
 #ifdef DEBUG
 	printf("Details after file creation\n");
@@ -800,7 +786,7 @@ static int read_f(const char *path, char *buffer, size_t size, off_t offset, str
 		memcpy(buffer+k, block, BLOCK_SIZE);
 		k+= BLOCK_SIZE;
 	}
-	if(/*(size+offset)%BLOCK_SIZE!=0*/ endBlockNum!= startBlockNum){
+	if(endBlockNum!= startBlockNum){
 		getBlock(fileNode.dNode.blockNums[endBlockNum], block);
 		memcpy(buffer+k, block, (size+offset)%BLOCK_SIZE);
 	}
@@ -872,7 +858,7 @@ static int unlink_f(const char *path){
 	char fileName[MAX_NAME_LEN];
 	unsigned int fileInodeNum;
 	struct memInode dirNode;
-	dirNode = pwdNode;
+
 	strcpy(pathCopy, path);
 	strcpy(fileName, basename(pathCopy));
 	strcpy(filePath, dirname(pathCopy));
@@ -887,7 +873,6 @@ static int unlink_f(const char *path){
 
 
 int main(int argc, char *argv[]){
-	//fsp = NULL;
 	fsp = open("M", O_RDWR);
 	if(fsp <= -1)
 		perror("open");
@@ -895,12 +880,10 @@ int main(int argc, char *argv[]){
 	getBlock(1, &(spBlk.dSblk));
 	spBlk.flagSB = 0;
 	printf("\nRoot Inode: %d\n", spBlk.dSblk.rootInode);
-	getDiskNode(spBlk.dSblk.rootInode, &pwdNode);
 	printf("Structure sizes: ");
 //	printf("struct superblock: %lu\nstruct dirRecord: %lu\nstruct memSuperblock: %lu\nstruct diskInode: %lu\nstruct memInode: %lu\nstruct inodeBit: %lu\nstruct dataBit: %lu\n", sizeof(struct superblock), sizeof(struct dirRecord), sizeof(struct memSuperblock), sizeof(struct diskInode), sizeof(struct memInode), sizeof(struct inodeBit), sizeof(struct dataBit));
 	fuse_main(argc, argv, &operations, NULL);
-	diskSync(&pwdNode);
-	//close(fsp);
+	syncSuper(&spBlk);
 	if(close(fsp)!=0)
 		perror("close");
 	return 0;
