@@ -23,7 +23,7 @@
 #define SB_SIZE sizeof(struct superblock)
 #define INODE_BM_SIZE sizeof(struct inodeBit)
 #define DATA_BM_SIZE sizeof(struct dataBit)
-#define MAX_DIR_DEPTH 16
+#define MAX_DIR_DEPTH 10
 #define DIR_ENTRIES_BLOCK (BLOCK_SIZE/sizeof(struct dirRecord))
 
 const int inodeStartBlk = 4;
