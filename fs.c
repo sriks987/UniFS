@@ -23,7 +23,7 @@
 #define SB_SIZE sizeof(struct superblock)
 #define INODE_BM_SIZE sizeof(struct inodeBit)
 #define DATA_BM_SIZE sizeof(struct dataBit)
-#define MAX_DIR_DEPTH 16
+#define MAX_DIR_DEPTH 10
 #define DIR_ENTRIES_BLOCK (BLOCK_SIZE/sizeof(struct dirRecord))
 
 const int inodeStartBlk = 4;
@@ -500,7 +500,7 @@ static unsigned int searchDir(char *name, struct memInode currNode){
 
 static int addName(char *name, unsigned int inodeNum, struct memInode *currNode){
 	struct dirRecord recs[DIR_ENTRIES_BLOCK];
-	int j=0;
+	int k=0, j=0;
 	int flag = 0;
 	unsigned int blockNum = 0;
 	if(currNode->dNode.numRecords % DIR_ENTRIES_BLOCK==0){
@@ -518,22 +518,25 @@ static int addName(char *name, unsigned int inodeNum, struct memInode *currNode)
 	for(int i=0;i<NUM_DIRECT && i< currNode->dNode.numBlocks; i++){
 		blockNum = currNode->dNode.blockNums[i];
 		getBlock(blockNum, recs);		// Reading a block of records
-		for(; j < currNode->dNode.numRecords; j++){
-			if(recs[j % DIR_ENTRIES_BLOCK].inodeNum == 0){
-				memset(&recs[j % DIR_ENTRIES_BLOCK], 0, sizeof(struct dirRecord));
-				recs[j % DIR_ENTRIES_BLOCK].inodeNum = inodeNum;
-				strcpy(recs[j % DIR_ENTRIES_BLOCK].name, name);
+		for(j=0; j < DIR_ENTRIES_BLOCK && k < currNode->dNode.numRecords; j++){
+			if(recs[j].inodeNum == 0){
+				memset(&recs[j], 0, sizeof(struct dirRecord));
+				recs[j].inodeNum = inodeNum;
+				strcpy(recs[j].name, name);
 				currNode->dNode.numRecords++;
 				putBlock(blockNum, recs);
 				flag=1;
 				return 1;
 			}
+			else{
+				k++;
+			}
 		}
 	}
 	if(flag==0){	// If we have to append to the data in the last block
-		memset(&recs[j % DIR_ENTRIES_BLOCK], 0, sizeof(struct dirRecord));
-		recs[j % DIR_ENTRIES_BLOCK].inodeNum = inodeNum;
-		strcpy(recs[j % DIR_ENTRIES_BLOCK].name, name);
+		memset(&recs[j], 0, sizeof(struct dirRecord));
+		recs[j].inodeNum = inodeNum;
+		strcpy(recs[j].name, name);
 		currNode->dNode.numRecords++;
 		currNode->dNode.size += sizeof(struct dirRecord);
 		putBlock(blockNum, recs);
