@@ -23,7 +23,7 @@ The numRecords field in the inode  indicates the number of valid directory entri
 A directory can have as many entries as can be fitted in its data blocks printed to by the inodes direct pointers.
 <br><br>
 # Snapshots of working
-![alt text](https://github.com/siri1398/FileSystemsOS/edit/master/snapshots/commands.png)
+![alt text](https://github.com/siri1398/FileSystemsOS/blob/master/snapshots/commands.png)
 <br><br>
 # Snapshots of emulated disk
-![alt text](https://github.com/siri1398/FileSystemsOS/edit/master/snapshots/octal_dump1.png)
+![alt text](https://github.com/siri1398/FileSystemsOS/blob/master/snapshots/octal_dump1.png)
