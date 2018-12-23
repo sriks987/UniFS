@@ -21,3 +21,9 @@ A type member in the inode indicates whether an inode is invalid, a regular file
 The numRecords field in the inode  indicates the number of valid directory entries if the inode is a directory.
 <br><br>
 A directory can have as many entries as can be fitted in its data blocks printed to by the inodes direct pointers.
+<br><br>
+# Snapshots of working
+![alt text](https://github.com/siri1398/FileSystemsOS/edit/master/snapshots/commands.png)
+<br><br>
+# Snapshots of emulated disk
+![alt text](https://github.com/siri1398/FileSystemsOS/edit/master/snapshots/octal_dump1.png)
