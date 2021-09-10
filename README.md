@@ -1,4 +1,4 @@
-# FileSystemsOS
+# FileSystem
 File System using FUSE
 
 Block Size: 512 bytes<br>
